@@ -11,16 +11,10 @@ permissions:
 
 jobs:
   check-and-build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Ensure Podman is installed
-        run: |
-          if ! command -v podman >/dev/null 2>&1; then
-            sudo apt-get update && sudo apt-get install -y podman
-          fi
+        uses: actions/checkout@v5
 
       - name: Check BlackArch ISO version and schedule day
         id: check
@@ -54,7 +48,7 @@ jobs:
 
       - name: Log in to GitHub Container Registry (ghcr.io)
         if: steps.check.outputs.should_build == 'true'
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u ${{ github.actor }} --password-stdin
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Build and push rolling tags to ghcr.io
         if: steps.check.outputs.should_build == 'true'
@@ -66,22 +60,22 @@ jobs:
 
           for variant in standard devel distroless; do
             echo "=== Building ${variant} ==="
-            podman build --no-cache -t "${IMAGE}:${variant}" "./${variant}"
-            podman push "${IMAGE}:${variant}"
+            docker build --no-cache -t "${IMAGE}:${variant}" "./${variant}"
+            docker push "${IMAGE}:${variant}"
 
             if [ "$IS_NEW_ISO" == "true" ]; then
-              podman tag "${IMAGE}:${variant}" "${IMAGE}:${variant}-${VERSION}"
-              podman push "${IMAGE}:${variant}-${VERSION}"
-              podman save "${IMAGE}:${variant}-${VERSION}" | gzip > "release-assets/blackarch-${variant}-${VERSION}.tar.gz"
+              docker tag "${IMAGE}:${variant}" "${IMAGE}:${variant}-${VERSION}"
+              docker push "${IMAGE}:${variant}-${VERSION}"
+              docker save "${IMAGE}:${variant}-${VERSION}" | gzip > "release-assets/blackarch-${variant}-${VERSION}.tar.gz"
             fi
           done
 
-          podman tag "${IMAGE}:standard" "${IMAGE}:latest"
-          podman push "${IMAGE}:latest"
+          docker tag "${IMAGE}:standard" "${IMAGE}:latest"
+          docker push "${IMAGE}:latest"
 
           if [ "$IS_NEW_ISO" == "true" ]; then
-            podman tag "${IMAGE}:standard" "${IMAGE}:${VERSION}"
-            podman push "${IMAGE}:${VERSION}"
+            docker tag "${IMAGE}:standard" "${IMAGE}:${VERSION}"
+            docker push "${IMAGE}:${VERSION}"
           fi
 
       - name: Commit version tag under your username and publish GitHub Release
@@ -93,7 +87,7 @@ jobs:
           RAW_VERSION="${{ steps.check.outputs.raw_version }}"
 
           git config user.name "gt-ayush"
-          git config user.email "gt-ayush@users.noreply.github.com"
+          git config user.email "gt-ayush@://github.com"
 
           git commit --allow-empty -m "release: sync BlackArch ${VERSION}"
           git tag -a "${VERSION}" -m "BlackArch ${VERSION}"
