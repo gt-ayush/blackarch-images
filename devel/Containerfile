@@ -2,7 +2,7 @@ FROM docker.io/library/archlinux:base-devel
 
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm curl gnupg git python python-pip && \
-    curl -O https://blackarch.org && \
+    curl -fSLA "Mozilla/5.0" -O https://blackarch.org && \
     chmod +x strap.sh && \
     ./strap.sh && \
     rm -f strap.sh && \
