@@ -1,14 +1,9 @@
 FROM docker.io/library/archlinux:latest
 
-RUN pacman-key --init && \
-    pacman-key --populate archlinux && \
-    pacman -Sy --noconfirm archlinux-keyring && \
-    pacman -Su --noconfirm && \
-    pacman-key --recv-keys 4345771566D76038C7FEB43863EC0ADBEA87E4E3 && \
-    pacman-key --lsign-key 4345771566D76038C7FEB43863EC0ADBEA87E4E3 && \
-    printf '\n[blackarch]\nServer = https://%s/blackarch/$repo/os/$arch\n' 'ftp.halifax.rwth-aachen.de' >> /etc/pacman.conf && \
-    pacman -Sy --noconfirm blackarch-keyring && \
-    pacman -Scc --noconfirm && \
-    rm -rf /var/cache/pacman/pkg/* /var/lib/pacman/sync/*
+RUN curl -O https://blackarch.org/strap.sh && \
+    echo 'd338a4bb95d9e09f97508da68ac9e17d963b85f6  strap.sh' | sha1sum -c - && \
+    chmod +x strap.sh && \
+    ./strap.sh && \
+    pacman -Syu --noconfirm
 
 CMD ["/bin/bash"]
