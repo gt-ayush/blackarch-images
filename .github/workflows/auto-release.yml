@@ -4,7 +4,7 @@ on:
   schedule:
     # Checks every day at 02:00 UTC
     - cron: '0 2 * * *'
-  workflow_dispatch: # Lets you click a "Run workflow" button anytime
+  workflow_dispatch: # Lets you click "Run workflow" manually anytime
 
 permissions:
   contents: write
@@ -35,20 +35,27 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GitHub Container Registry (ghcr.io)
         if: steps.release_check.outputs.exists == 'false'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Build and push all variants
+      - name: Build, push to ghcr.io, and export tarballs
         if: steps.release_check.outputs.exists == 'false'
         run: |
           IMAGE="ghcr.io/gt-ayush/blackarch"
           VERSION="${{ steps.check.outputs.version }}"
+          mkdir -p release-assets
 
           for variant in standard devel distroless; do
+            echo "=== Building ${variant} ==="
             podman build --no-cache -t "${IMAGE}:${variant}" -t "${IMAGE}:${variant}-${VERSION}" "./${variant}"
+
+            echo "=== Pushing ${variant} to ghcr.io ==="
             podman push "${IMAGE}:${variant}"
             podman push "${IMAGE}:${variant}-${VERSION}"
+
+            echo "=== Exporting ${variant} tarball for GitHub Release ==="
+            podman save "${IMAGE}:${variant}-${VERSION}" | gzip > "release-assets/blackarch-${variant}-${VERSION}.tar.gz"
           done
 
           podman tag "${IMAGE}:standard" "${IMAGE}:latest"
@@ -56,11 +63,11 @@ jobs:
           podman push "${IMAGE}:latest"
           podman push "${IMAGE}:${VERSION}"
 
-      - name: Publish GitHub Release
+      - name: Publish GitHub Release with attached files
         if: steps.release_check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ steps.check.outputs.version }}" \
+          gh release create "${{ steps.check.outputs.version }}" release-assets/*.tar.gz \
             --title "BlackArch ${{ steps.check.outputs.version }}" \
-            --notes "Automated build synced with official BlackArch ISO **${{ steps.check.outputs.raw_version }}**."
+            --notes "Automated build synced with official BlackArch ISO **${{ steps.check.outputs.raw_version }}**. Pull via \`ghcr.io/gt-ayush/blackarch\` or download the \`.tar.gz\` archives below."
