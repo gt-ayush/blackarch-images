@@ -2,9 +2,11 @@ name: Auto-Sync BlackArch Release
 
 on:
   schedule:
-    # Checks every day at 02:00 UTC
+    # Runs daily at 02:00 UTC (7:30 AM IST)
+    # - Checks for new BlackArch ISO releases every day
+    # - Automatically refreshes rolling :latest tags every Sunday (day 0)
     - cron: '0 2 * * *'
-  workflow_dispatch: # Lets you click "Run workflow" manually anytime
+  workflow_dispatch: # Allows manual trigger button on GitHub anytime
 
 permissions:
   contents: write
@@ -17,57 +19,71 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check latest BlackArch ISO version
+      - name: Check BlackArch ISO version and schedule day
         id: check
-        run: |
-          LATEST_ISO=$(curl -sL https://blackarch.org | grep -oE 'blackarch-linux-full-[0-9]{4}\.[0-9]{2}\.[0-9]{2}' | head -n 1 | grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}')
-          echo "version=v${LATEST_ISO}" >> $GITHUB_OUTPUT
-          echo "raw_version=${LATEST_ISO}" >> $GITHUB_OUTPUT
-
-      - name: Check if GitHub Release already exists
-        id: release_check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view "${{ steps.check.outputs.version }}" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+          LATEST_ISO=$(curl -sL https://blackarch.org | grep -oE 'blackarch-linux-full-[0-9]{4}\.[0-9]{2}\.[0-9]{2}' | head -n 1 | grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}')
+          VERSION="v${LATEST_ISO}"
+          DAY_OF_WEEK=$(date -u +%u) # 7 = Sunday
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "raw_version=${LATEST_ISO}" >> $GITHUB_OUTPUT
+
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "is_new_iso=false" >> $GITHUB_OUTPUT
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "is_new_iso=true" >> $GITHUB_OUTPUT
+          fi
+
+          # Build if: new ISO detected OR today is Sunday OR manually triggered
+          if ! gh release view "${VERSION}" >/dev/null 2>&1 || [ "$DAY_OF_WEEK" == "7" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Log in to GitHub Container Registry (ghcr.io)
-        if: steps.release_check.outputs.exists == 'false'
+        if: steps.check.outputs.should_build == 'true'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Build, push to ghcr.io, and export tarballs
-        if: steps.release_check.outputs.exists == 'false'
+      - name: Build and push rolling tags to ghcr.io
+        if: steps.check.outputs.should_build == 'true'
         run: |
           IMAGE="ghcr.io/gt-ayush/blackarch"
           VERSION="${{ steps.check.outputs.version }}"
+          IS_NEW_ISO="${{ steps.check.outputs.is_new_iso }}"
           mkdir -p release-assets
 
           for variant in standard devel distroless; do
             echo "=== Building ${variant} ==="
-            podman build --no-cache -t "${IMAGE}:${variant}" -t "${IMAGE}:${variant}-${VERSION}" "./${variant}"
-
-            echo "=== Pushing ${variant} to ghcr.io ==="
+            podman build --no-cache -t "${IMAGE}:${variant}" "./${variant}"
             podman push "${IMAGE}:${variant}"
-            podman push "${IMAGE}:${variant}-${VERSION}"
 
-            echo "=== Exporting ${variant} tarball for GitHub Release ==="
-            podman save "${IMAGE}:${variant}-${VERSION}" | gzip > "release-assets/blackarch-${variant}-${VERSION}.tar.gz"
+            # If this is a new ISO release, also tag with the ISO version and export tarball
+            if [ "$IS_NEW_ISO" == "true" ]; then
+              podman tag "${IMAGE}:${variant}" "${IMAGE}:${variant}-${VERSION}"
+              podman push "${IMAGE}:${variant}-${VERSION}"
+              podman save "${IMAGE}:${variant}-${VERSION}" | gzip > "release-assets/blackarch-${variant}-${VERSION}.tar.gz"
+            fi
           done
 
+          # Always update :latest tag on ghcr.io
           podman tag "${IMAGE}:standard" "${IMAGE}:latest"
-          podman tag "${IMAGE}:standard" "${IMAGE}:${VERSION}"
           podman push "${IMAGE}:latest"
-          podman push "${IMAGE}:${VERSION}"
 
-      - name: Publish GitHub Release with attached files
-        if: steps.release_check.outputs.exists == 'false'
+          # Tag :vYYYY.MM.DD on ghcr.io if new ISO
+          if [ "$IS_NEW_ISO" == "true" ]; then
+            podman tag "${IMAGE}:standard" "${IMAGE}:${VERSION}"
+            podman push "${IMAGE}:${VERSION}"
+          fi
+
+      - name: Publish GitHub Release (Only when a new ISO drops)
+        if: steps.check.outputs.is_new_iso == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ steps.check.outputs.version }}" release-assets/*.tar.gz \
             --title "BlackArch ${{ steps.check.outputs.version }}" \
-            --notes "Automated build synced with official BlackArch ISO **${{ steps.check.outputs.raw_version }}**. Pull via \`ghcr.io/gt-ayush/blackarch\` or download the \`.tar.gz\` archives below."
+            --notes "Automated build synced with official BlackArch ISO **${{ steps.check.outputs.raw_version }}**. Pull via \`ghcr.io/gt-ayush/blackarch\` or download the offline \`.tar.gz\` archives below."
