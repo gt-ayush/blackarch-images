@@ -4,7 +4,7 @@ on:
   schedule:
     # Runs daily at 02:00 UTC (7:30 AM IST)
     # - Checks for new BlackArch ISO releases every day
-    # - Automatically refreshes rolling :latest tags every Sunday (day 0)
+    # - Automatically refreshes rolling :latest tags every Sunday (day 7)
     - cron: '0 2 * * *'
   workflow_dispatch: # Allows manual trigger button on GitHub anytime
 
@@ -79,11 +79,25 @@ jobs:
             podman push "${IMAGE}:${VERSION}"
           fi
 
-      - name: Publish GitHub Release (Only when a new ISO drops)
+      - name: Commit version tag under your username and publish GitHub Release
         if: steps.check.outputs.is_new_iso == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ steps.check.outputs.version }}" release-assets/*.tar.gz \
-            --title "BlackArch ${{ steps.check.outputs.version }}" \
-            --notes "Automated build synced with official BlackArch ISO **${{ steps.check.outputs.raw_version }}**. Pull via \`ghcr.io/gt-ayush/blackarch\` or download the offline \`.tar.gz\` archives below."
+          VERSION="${{ steps.check.outputs.version }}"
+          RAW_VERSION="${{ steps.check.outputs.raw_version }}"
+
+          # Set commit and tag author to your GitHub profile (gt-ayush)
+          git config user.name "gt-ayush"
+          git config user.email "gt-ayush@://github.com"
+
+          # Create a clean commit and annotated tag in your commit history
+          git commit --allow-empty -m "release: sync BlackArch ${VERSION}"
+          git tag -a "${VERSION}" -m "BlackArch ${VERSION}"
+          git push origin main --tags
+
+          # Create the GitHub Release pointing to your tagged commit
+          gh release create "${VERSION}" release-assets/*.tar.gz \
+            --target "${VERSION}" \
+            --title "BlackArch ${VERSION}" \
+            --notes "Automated build synced with official BlackArch ISO **${RAW_VERSION}**. Pull via \`ghcr.io/gt-ayush/blackarch\` or download the offline \`.tar.gz\` archives below."
