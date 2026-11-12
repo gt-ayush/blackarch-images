@@ -22,7 +22,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           LATEST_ISO=$(curl -sLA "Mozilla/5.0" https://blackarch.org | grep -oE 'blackarch-linux-full-[0-9]{4}\.[0-9]{2}\.[0-9]{2}' | head -n 1 | grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}' || true)
-          
+
           if [ -z "$LATEST_ISO" ]; then
             LATEST_ISO=$(date -u +%Y.%m.%d)
           fi
@@ -31,24 +31,24 @@ jobs:
           DAY_OF_WEEK=$(date -u +%u)
 
           echo "Detected version: ${VERSION}"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "raw_version=${LATEST_ISO}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "raw_version=${LATEST_ISO}" >> "$GITHUB_OUTPUT"
 
           if gh release view "${VERSION}" >/dev/null 2>&1; then
-            echo "is_new_iso=false" >> $GITHUB_OUTPUT
+            echo "is_new_iso=false" >> "$GITHUB_OUTPUT"
           else
-            echo "is_new_iso=true" >> $GITHUB_OUTPUT
+            echo "is_new_iso=true" >> "$GITHUB_OUTPUT"
           fi
 
-          if ! gh release view "${VERSION}" >/dev/null 2>&1 || [ "$DAY_OF_WEEK" == "7" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "should_build=true" >> $GITHUB_OUTPUT
+          if ! gh release view "${VERSION}" >/dev/null 2>&1 || [ "$DAY_OF_WEEK" = "7" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
           else
-            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Log in to GitHub Container Registry (ghcr.io)
         if: steps.check.outputs.should_build == 'true'
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build and push rolling tags to ghcr.io
         if: steps.check.outputs.should_build == 'true'
@@ -63,7 +63,7 @@ jobs:
             docker build --no-cache -f "./${variant}/Containerfile" -t "${IMAGE}:${variant}" "./${variant}"
             docker push "${IMAGE}:${variant}"
 
-            if [ "$IS_NEW_ISO" == "true" ]; then
+            if [ "$IS_NEW_ISO" = "true" ]; then
               docker tag "${IMAGE}:${variant}" "${IMAGE}:${variant}-${VERSION}"
               docker push "${IMAGE}:${variant}-${VERSION}"
               docker save "${IMAGE}:${variant}-${VERSION}" | gzip > "release-assets/blackarch-${variant}-${VERSION}.tar.gz"
@@ -73,12 +73,12 @@ jobs:
           docker tag "${IMAGE}:standard" "${IMAGE}:latest"
           docker push "${IMAGE}:latest"
 
-          if [ "$IS_NEW_ISO" == "true" ]; then
+          if [ "$IS_NEW_ISO" = "true" ]; then
             docker tag "${IMAGE}:standard" "${IMAGE}:${VERSION}"
             docker push "${IMAGE}:${VERSION}"
           fi
 
-      - name: Commit version tag under your username and publish GitHub Release
+      - name: Commit version tag and publish GitHub Release
         if: steps.check.outputs.is_new_iso == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -88,12 +88,16 @@ jobs:
 
           git config user.name "gt-ayush"
           git config user.email "gt-ayush@users.noreply.github.com"
+          git fetch --force --tags origin
 
-          git commit --allow-empty -m "release: sync BlackArch ${VERSION}"
-          git tag -a "${VERSION}" -m "BlackArch ${VERSION}"
-          git push origin main --tags
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "Tag ${VERSION} already exists; skipping commit and tag creation."
+          else
+            git commit --allow-empty -m "release: sync BlackArch ${VERSION}"
+            git tag -a "${VERSION}" -m "BlackArch ${VERSION}"
+            git push origin main "refs/tags/${VERSION}"
+          fi
 
           gh release create "${VERSION}" release-assets/*.tar.gz \
-            --target "${VERSION}" \
             --title "BlackArch ${VERSION}" \
             --notes "Automated build synced with official BlackArch ISO **${RAW_VERSION}**. Pull via \`ghcr.io/gt-ayush/blackarch\` or download the offline \`.tar.gz\` archives below."
