@@ -5,7 +5,7 @@ RUN pacman-key --init && \
     pacman -Sy --noconfirm archlinux-keyring && \
     pacman -Su --noconfirm && \
     pacman -S --noconfirm curl gnupg && \
-    curl -fSLA "Mozilla/5.0" -O strap.sh https://blackarch.org && \
+    curl -fSLA "Mozilla/5.0" -O strap.sh "https://blackarch.org(printf 'strap.sh')" && \
     chmod +x strap.sh && \
     ./strap.sh && \
     rm -f strap.sh
