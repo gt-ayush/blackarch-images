@@ -1,0 +1,12 @@
+FROM docker.io/library/archlinux:base-devel
+
+RUN pacman -Syu --noconfirm && \
+    pacman -S --noconfirm curl gnupg git python python-pip && \
+    curl -O https://blackarch.org && \
+    chmod +x strap.sh && \
+    ./strap.sh && \
+    rm -f strap.sh && \
+    pacman -Scc --noconfirm && \
+    rm -rf /var/cache/pacman/pkg/* /var/lib/pacman/sync/*
+
+CMD ["/bin/bash"]
