@@ -1,0 +1,20 @@
+FROM docker.io/library/archlinux:latest AS builder
+
+RUN pacman -Syu --noconfirm && \
+    pacman -S --noconfirm curl gnupg && \
+    curl -O https://blackarch.org && \
+    chmod +x strap.sh && \
+    ./strap.sh && \
+    rm -f strap.sh
+
+# Populate a minimal root filesystem with core runtime libraries only
+RUN mkdir -p /rootfs/var/lib/pacman /rootfs/etc && \
+    cp -r /etc/pacman* /rootfs/etc/ && \
+    pacman -Sy --root /rootfs --noconfirm glibc openssl ca-certificates && \
+    rm -rf /rootfs/var/cache/pacman/pkg/* \
+           /rootfs/var/lib/pacman/sync/* \
+           /rootfs/usr/share/man/* \
+           /rootfs/usr/share/doc/*
+
+FROM scratch
+COPY --from=builder /rootfs /
