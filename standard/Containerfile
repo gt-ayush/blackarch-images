@@ -1,6 +1,9 @@
 FROM docker.io/library/archlinux:latest
 
-RUN pacman -Syu --noconfirm && \
+RUN pacman-key --init && \
+    pacman-key --populate archlinux && \
+    pacman -Sy --noconfirm archlinux-keyring && \
+    pacman -Su --noconfirm && \
     pacman -S --noconfirm curl gnupg && \
     curl -fSLA "Mozilla/5.0" -O https://blackarch.org && \
     chmod +x strap.sh && \
