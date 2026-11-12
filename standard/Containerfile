@@ -4,11 +4,10 @@ RUN pacman-key --init && \
     pacman-key --populate archlinux && \
     pacman -Sy --noconfirm archlinux-keyring && \
     pacman -Su --noconfirm && \
-    pacman -S --noconfirm curl gnupg && \
-    curl -fSLA "Mozilla/5.0" -o strap.sh https://blackarch.org && \
-    chmod +x strap.sh && \
-    ./strap.sh && \
-    rm -f strap.sh && \
+    pacman-key --recv-keys 4345771566D76038C7FEB43863EC0ADBEA87E4E3 && \
+    pacman-key --lsign-key 4345771566D76038C7FEB43863EC0ADBEA87E4E3 && \
+    printf '\n[blackarch]\nServer = https://rwth-aachen.de\n' >> /etc/pacman.conf && \
+    pacman -Sy --noconfirm blackarch-keyring && \
     pacman -Scc --noconfirm && \
     rm -rf /var/cache/pacman/pkg/* /var/lib/pacman/sync/*
 
