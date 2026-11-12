@@ -1,0 +1,66 @@
+name: Auto-Sync BlackArch Release
+
+on:
+  schedule:
+    # Checks every day at 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Lets you click a "Run workflow" button anytime
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check latest BlackArch ISO version
+        id: check
+        run: |
+          LATEST_ISO=$(curl -sL https://blackarch.org | grep -oE 'blackarch-linux-full-[0-9]{4}\.[0-9]{2}\.[0-9]{2}' | head -n 1 | grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}')
+          echo "version=v${LATEST_ISO}" >> $GITHUB_OUTPUT
+          echo "raw_version=${LATEST_ISO}" >> $GITHUB_OUTPUT
+
+      - name: Check if GitHub Release already exists
+        id: release_check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.check.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Log in to GitHub Container Registry
+        if: steps.release_check.outputs.exists == 'false'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build and push all variants
+        if: steps.release_check.outputs.exists == 'false'
+        run: |
+          IMAGE="ghcr.io/gt-ayush/blackarch"
+          VERSION="${{ steps.check.outputs.version }}"
+
+          for variant in standard devel distroless; do
+            podman build --no-cache -t "${IMAGE}:${variant}" -t "${IMAGE}:${variant}-${VERSION}" "./${variant}"
+            podman push "${IMAGE}:${variant}"
+            podman push "${IMAGE}:${variant}-${VERSION}"
+          done
+
+          podman tag "${IMAGE}:standard" "${IMAGE}:latest"
+          podman tag "${IMAGE}:standard" "${IMAGE}:${VERSION}"
+          podman push "${IMAGE}:latest"
+          podman push "${IMAGE}:${VERSION}"
+
+      - name: Publish GitHub Release
+        if: steps.release_check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.check.outputs.version }}" \
+            --title "BlackArch ${{ steps.check.outputs.version }}" \
+            --notes "Automated build synced with official BlackArch ISO **${{ steps.check.outputs.raw_version }}**."
