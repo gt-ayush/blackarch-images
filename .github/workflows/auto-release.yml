@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   check-and-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -60,7 +60,7 @@ jobs:
 
           for variant in standard devel distroless; do
             echo "=== Building ${variant} ==="
-            docker build --no-cache -t "${IMAGE}:${variant}" "./${variant}"
+            docker build --no-cache -f "./${variant}/Containerfile" -t "${IMAGE}:${variant}" "./${variant}"
             docker push "${IMAGE}:${variant}"
 
             if [ "$IS_NEW_ISO" == "true" ]; then
@@ -87,7 +87,7 @@ jobs:
           RAW_VERSION="${{ steps.check.outputs.raw_version }}"
 
           git config user.name "gt-ayush"
-          git config user.email "gt-ayush@://github.com"
+          git config user.email "gt-ayush@users.noreply.github.com"
 
           git commit --allow-empty -m "release: sync BlackArch ${VERSION}"
           git tag -a "${VERSION}" -m "BlackArch ${VERSION}"
