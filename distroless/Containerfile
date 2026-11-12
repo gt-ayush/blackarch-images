@@ -2,12 +2,11 @@ FROM docker.io/library/archlinux:latest AS builder
 
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm curl gnupg && \
-    curl -O https://blackarch.org && \
+    curl -fSLA "Mozilla/5.0" -O https://blackarch.org && \
     chmod +x strap.sh && \
     ./strap.sh && \
     rm -f strap.sh
 
-# Populate a minimal root filesystem with core runtime libraries only
 RUN mkdir -p /rootfs/var/lib/pacman /rootfs/etc && \
     cp -r /etc/pacman* /rootfs/etc/ && \
     pacman -Sy --root /rootfs --noconfirm glibc openssl ca-certificates && \
