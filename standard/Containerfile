@@ -6,7 +6,7 @@ RUN pacman-key --init && \
     pacman -Su --noconfirm && \
     pacman-key --recv-keys 4345771566D76038C7FEB43863EC0ADBEA87E4E3 && \
     pacman-key --lsign-key 4345771566D76038C7FEB43863EC0ADBEA87E4E3 && \
-    printf '\n[blackarch]\nServer = https://rwth-aachen.de\n' >> /etc/pacman.conf && \
+    printf '\n[blackarch]\nServer = https://%s/blackarch/$repo/os/$arch\n' 'ftp.halifax.rwth-aachen.de' >> /etc/pacman.conf && \
     pacman -Sy --noconfirm blackarch-keyring && \
     pacman -Scc --noconfirm && \
     rm -rf /var/cache/pacman/pkg/* /var/lib/pacman/sync/*
