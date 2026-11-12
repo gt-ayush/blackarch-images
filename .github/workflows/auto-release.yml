@@ -2,11 +2,8 @@ name: Auto-Sync BlackArch Release
 
 on:
   schedule:
-    # Runs daily at 02:00 UTC (7:30 AM IST)
-    # - Checks for new BlackArch ISO releases every day
-    # - Automatically refreshes rolling :latest tags every Sunday (day 7)
     - cron: '0 2 * * *'
-  workflow_dispatch: # Allows manual trigger button on GitHub anytime
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,20 +11,32 @@ permissions:
 
 jobs:
   check-and-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Ensure Podman is installed
+        run: |
+          if ! command -v podman >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y podman
+          fi
 
       - name: Check BlackArch ISO version and schedule day
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LATEST_ISO=$(curl -sL https://blackarch.org | grep -oE 'blackarch-linux-full-[0-9]{4}\.[0-9]{2}\.[0-9]{2}' | head -n 1 | grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}')
-          VERSION="v${LATEST_ISO}"
-          DAY_OF_WEEK=$(date -u +%u) # 7 = Sunday
+          LATEST_ISO=$(curl -sLA "Mozilla/5.0" https://blackarch.org | grep -oE 'blackarch-linux-full-[0-9]{4}\.[0-9]{2}\.[0-9]{2}' | head -n 1 | grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}' || true)
+          
+          if [ -z "$LATEST_ISO" ]; then
+            LATEST_ISO=$(date -u +%Y.%m.%d)
+          fi
 
+          VERSION="v${LATEST_ISO}"
+          DAY_OF_WEEK=$(date -u +%u)
+
+          echo "Detected version: ${VERSION}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "raw_version=${LATEST_ISO}" >> $GITHUB_OUTPUT
 
@@ -37,7 +46,6 @@ jobs:
             echo "is_new_iso=true" >> $GITHUB_OUTPUT
           fi
 
-          # Build if: new ISO detected OR today is Sunday OR manually triggered
           if ! gh release view "${VERSION}" >/dev/null 2>&1 || [ "$DAY_OF_WEEK" == "7" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
           else
@@ -61,7 +69,6 @@ jobs:
             podman build --no-cache -t "${IMAGE}:${variant}" "./${variant}"
             podman push "${IMAGE}:${variant}"
 
-            # If this is a new ISO release, also tag with the ISO version and export tarball
             if [ "$IS_NEW_ISO" == "true" ]; then
               podman tag "${IMAGE}:${variant}" "${IMAGE}:${variant}-${VERSION}"
               podman push "${IMAGE}:${variant}-${VERSION}"
@@ -69,11 +76,9 @@ jobs:
             fi
           done
 
-          # Always update :latest tag on ghcr.io
           podman tag "${IMAGE}:standard" "${IMAGE}:latest"
           podman push "${IMAGE}:latest"
 
-          # Tag :vYYYY.MM.DD on ghcr.io if new ISO
           if [ "$IS_NEW_ISO" == "true" ]; then
             podman tag "${IMAGE}:standard" "${IMAGE}:${VERSION}"
             podman push "${IMAGE}:${VERSION}"
@@ -87,16 +92,13 @@ jobs:
           VERSION="${{ steps.check.outputs.version }}"
           RAW_VERSION="${{ steps.check.outputs.raw_version }}"
 
-          # Set commit and tag author to your GitHub profile (gt-ayush)
           git config user.name "gt-ayush"
-          git config user.email "gt-ayush@://github.com"
+          git config user.email "gt-ayush@users.noreply.github.com"
 
-          # Create a clean commit and annotated tag in your commit history
           git commit --allow-empty -m "release: sync BlackArch ${VERSION}"
           git tag -a "${VERSION}" -m "BlackArch ${VERSION}"
           git push origin main --tags
 
-          # Create the GitHub Release pointing to your tagged commit
           gh release create "${VERSION}" release-assets/*.tar.gz \
             --target "${VERSION}" \
             --title "BlackArch ${VERSION}" \
