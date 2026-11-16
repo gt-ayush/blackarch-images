@@ -9,13 +9,18 @@ permissions:
   contents: write
   packages: write
 
-jobs:
-  check-and-build:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+env:
+  IMAGE: ghcr.io/gt-ayush/blackarch
 
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      raw_version: ${{ steps.check.outputs.raw_version }}
+      is_new_iso: ${{ steps.check.outputs.is_new_iso }}
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
       - name: Check BlackArch ISO version and schedule day
         id: check
         env:
@@ -46,45 +51,120 @@ jobs:
             echo "should_build=false" >> "$GITHUB_OUTPUT"
           fi
 
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Log in to GitHub Container Registry (ghcr.io)
-        if: steps.check.outputs.should_build == 'true'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push rolling tags to ghcr.io
-        if: steps.check.outputs.should_build == 'true'
+      - name: Build and push ${{ matrix.arch }} images
         run: |
-          IMAGE="ghcr.io/gt-ayush/blackarch"
-          VERSION="${{ steps.check.outputs.version }}"
-          IS_NEW_ISO="${{ steps.check.outputs.is_new_iso }}"
+          VERSION="${{ needs.check.outputs.version }}"
+          IS_NEW_ISO="${{ needs.check.outputs.is_new_iso }}"
+          ARCH="${{ matrix.arch }}"
           mkdir -p release-assets
 
           for variant in standard devel distroless; do
-            echo "=== Building ${variant} ==="
-            docker build --no-cache -f "./${variant}/Containerfile" -t "${IMAGE}:${variant}" "./${variant}"
-            docker push "${IMAGE}:${variant}"
+            echo "=== Building ${variant} (${ARCH}) ==="
+            docker buildx build \
+              --platform "linux/${ARCH}" \
+              --no-cache \
+              --load \
+              -f "./${variant}/Containerfile" \
+              -t "${IMAGE}:${variant}-${ARCH}" \
+              "./${variant}"
+
+            docker push "${IMAGE}:${variant}-${ARCH}"
 
             if [ "$IS_NEW_ISO" = "true" ]; then
-              docker tag "${IMAGE}:${variant}" "${IMAGE}:${variant}-${VERSION}"
-              docker push "${IMAGE}:${variant}-${VERSION}"
-              docker save "${IMAGE}:${variant}-${VERSION}" | gzip > "release-assets/blackarch-${variant}-${VERSION}.tar.gz"
+              docker tag "${IMAGE}:${variant}-${ARCH}" "${IMAGE}:${variant}-${VERSION}-${ARCH}"
+              docker push "${IMAGE}:${variant}-${VERSION}-${ARCH}"
+              docker save "${IMAGE}:${variant}-${VERSION}-${ARCH}" | gzip > "release-assets/blackarch-${variant}-${VERSION}-${ARCH}.tar.gz"
             fi
           done
 
-          docker tag "${IMAGE}:standard" "${IMAGE}:latest"
-          docker push "${IMAGE}:latest"
+      - name: Upload offline release archives (${{ matrix.arch }})
+        if: needs.check.outputs.is_new_iso == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.arch }}
+          path: release-assets/*.tar.gz
 
+  publish:
+    needs: [check, build]
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Log in to GitHub Container Registry (ghcr.io)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Create and push multi-arch manifests
+        run: |
+          VERSION="${{ needs.check.outputs.version }}"
+          IS_NEW_ISO="${{ needs.check.outputs.is_new_iso }}"
+
+          for variant in standard devel distroless; do
+            echo "=== Creating multi-arch manifest for ${variant} ==="
+            docker buildx imagetools create -t "${IMAGE}:${variant}" \
+              "${IMAGE}:${variant}-amd64" \
+              "${IMAGE}:${variant}-arm64"
+
+            if [ "$IS_NEW_ISO" = "true" ]; then
+              docker buildx imagetools create -t "${IMAGE}:${variant}-${VERSION}" \
+                "${IMAGE}:${variant}-${VERSION}-amd64" \
+                "${IMAGE}:${variant}-${VERSION}-arm64"
+            fi
+          done
+
+          # Multi-arch :latest manifest
+          docker buildx imagetools create -t "${IMAGE}:latest" \
+            "${IMAGE}:standard-amd64" \
+            "${IMAGE}:standard-arm64"
+
+          # Multi-arch :vYYYY.MM.DD manifest
           if [ "$IS_NEW_ISO" = "true" ]; then
-            docker tag "${IMAGE}:standard" "${IMAGE}:${VERSION}"
-            docker push "${IMAGE}:${VERSION}"
+            docker buildx imagetools create -t "${IMAGE}:${VERSION}" \
+              "${IMAGE}:standard-${VERSION}-amd64" \
+              "${IMAGE}:standard-${VERSION}-arm64"
           fi
 
+      - name: Download release archives
+        if: needs.check.outputs.is_new_iso == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          merge-multiple: true
+          path: release-assets
+
       - name: Commit version tag and publish GitHub Release
-        if: steps.check.outputs.is_new_iso == 'true'
+        if: needs.check.outputs.is_new_iso == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ steps.check.outputs.version }}"
-          RAW_VERSION="${{ steps.check.outputs.raw_version }}"
+          VERSION="${{ needs.check.outputs.version }}"
+          RAW_VERSION="${{ needs.check.outputs.raw_version }}"
 
           git config user.name "gt-ayush"
           git config user.email "gt-ayush@users.noreply.github.com"
@@ -100,4 +180,4 @@ jobs:
 
           gh release create "${VERSION}" release-assets/*.tar.gz \
             --title "BlackArch ${VERSION}" \
-            --notes "Automated build synced with official BlackArch ISO **${RAW_VERSION}**. Pull via \`ghcr.io/gt-ayush/blackarch\` or download the offline \`.tar.gz\` archives below."
+            --notes "Multi-arch (\`amd64\` / \`arm64\`) build synced with official BlackArch ISO **${RAW_VERSION}**. Pull via \`ghcr.io/gt-ayush/blackarch\` or download the offline \`.tar.gz\` archives below."
