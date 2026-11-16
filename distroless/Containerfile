@@ -1,18 +1,36 @@
-FROM docker.io/library/archlinux:latest AS builder
+# 1. amd64 base (exact same official image you already use)
+FROM docker.io/library/archlinux:latest AS base-amd64
+
+# 2. arm64 (aarch64) base from official Arch Linux ARM
+FROM scratch AS base-arm64
+ADD http://archlinuxarm.org /
+RUN sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf && \
+    pacman-key --init && \
+    pacman-key --populate archlinuxarm && \
+    pacman -Syu --noconfirm curl
+
+# 3. Builder stage (automatically selects amd64 or arm64 via TARGETARCH)
+FROM base-${TARGETARCH} AS builder
 
 RUN curl -O https://blackarch.org/strap.sh && \
     echo 'd338a4bb95d9e09f97508da68ac9e17d963b85f6  strap.sh' | sha1sum -c - && \
     chmod +x strap.sh && \
     ./strap.sh && \
+    rm -f strap.sh && \
+    if [ "$(uname -m)" = "x86_64" ]; then \
+      sed -i '/^#\[multilib\]/,/^#Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' /etc/pacman.conf; \
+    fi && \
     pacman -Syu --noconfirm
 
 RUN mkdir -p /rootfs/var/lib/pacman /rootfs/etc && \
     cp -r /etc/pacman* /rootfs/etc/ && \
     pacman -Sy --root /rootfs --noconfirm glibc openssl ca-certificates && \
     rm -rf /rootfs/var/cache/pacman/pkg/* \
-           /rootfs/var/lib/pacman/sync/* \
+           /rootfs/var/lib/pacman \
+           /rootfs/etc/pacman* \
            /rootfs/usr/share/man/* \
            /rootfs/usr/share/doc/*
 
+# 4. Final zero-shell scratch image
 FROM scratch
 COPY --from=builder /rootfs /
