@@ -16,68 +16,88 @@ jobs:
   build:
     runs-on: ubuntu-24.04
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            base_image: docker.io/library/archlinux:latest
+            runner: ubuntu-24.04
+          - arch: arm64
+            base_image: ghcr.io/baerenbude-org/archlinuxarm-arm64v8:latest
+            runner: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.runner }}
+
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Set up QEMU
+        if: matrix.arch == 'arm64'
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Determine version
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          VERSION="$(date -u +%Y.%m.%d)"
-          TAG="v${VERSION}"
-
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push standard, devel, distroless images
+      - name: Build variant images
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          TAG: ${{ steps.version.outputs.tag }}
+          BASE_IMAGE: ${{ matrix.base_image }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
 
           for variant in standard devel distroless; do
-            echo "== Building ${variant} =="
+            echo "== Building ${variant} for linux/${ARCH} =="
             docker buildx build \
-              --platform linux/amd64,linux/arm64 \
+              --platform "linux/${ARCH}" \
+              --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
               --push \
               -f "./${variant}/Containerfile" \
-              -t "${IMAGE}:${variant}" \
-              -t "${IMAGE}:${variant}-${VERSION}" \
+              -t "${IMAGE}:${variant}-${ARCH}" \
               "./${variant}"
+          done
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Publish multi-arch tags
+        run: |
+          set -euo pipefail
+
+          for variant in standard devel distroless; do
+            docker buildx imagetools create \
+              --tag "${IMAGE}:${variant}" \
+              "${IMAGE}:${variant}-amd64" \
+              "${IMAGE}:${variant}-arm64"
           done
 
           docker buildx imagetools create \
             --tag "${IMAGE}:latest" \
-            "${IMAGE}:standard"
+            "${IMAGE}:standard-amd64" \
+            "${IMAGE}:standard-arm64"
 
-          docker buildx imagetools create \
-            --tag "${IMAGE}:${TAG}" \
-            "${IMAGE}:standard-${VERSION}"
-
-      - name: Create git tag for the date version
-        shell: bash
+      - name: Create date tag
         run: |
           set -euo pipefail
 
+          TAG="v$(date -u +%Y.%m.%d)"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          TAG="${{ steps.version.outputs.tag }}"
 
           if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
             echo "Tag ${TAG} already exists."
