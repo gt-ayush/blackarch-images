@@ -31,7 +31,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check BlackArch ISO version and build schedule
+      - name: Detect BlackArch ISO version
         id: check
         run: |
           set -euo pipefail
@@ -45,14 +45,14 @@ jobs:
           )
 
           if [ -z "$LATEST_ISO" ]; then
-            echo "::error::Could not detect the latest BlackArch ISO version."
+            echo "::error::Could not detect latest BlackArch ISO version"
             exit 1
           fi
 
           VERSION="v${LATEST_ISO}"
           DAY_OF_WEEK=$(date -u +%u)
 
-          echo "Detected BlackArch version: ${VERSION}"
+          echo "Detected version: ${VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "raw_version=${LATEST_ISO}" >> "$GITHUB_OUTPUT"
 
@@ -62,9 +62,7 @@ jobs:
             echo "is_new_iso=true" >> "$GITHUB_OUTPUT"
           fi
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] ||
-             [ "$DAY_OF_WEEK" = "7" ] ||
-             [ "$(git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; echo $?)" -ne 0 ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$DAY_OF_WEEK" = "7" ] || ! git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           else
             echo "should_build=false" >> "$GITHUB_OUTPUT"
@@ -73,7 +71,6 @@ jobs:
   build:
     needs: check
     if: needs.check.outputs.should_build == 'true'
-
     strategy:
       fail-fast: false
       matrix:
@@ -89,17 +86,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Set up QEMU
+        if: matrix.arch == 'arm64'
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GHCR
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" |
-            docker login ghcr.io \
-              --username "${{ github.actor }}" \
-              --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push ${{ matrix.arch }} images
+      - name: Build and push multi-arch variant for ${{ matrix.arch }}
         env:
           VERSION: ${{ needs.check.outputs.version }}
           IS_NEW_ISO: ${{ needs.check.outputs.is_new_iso }}
@@ -108,7 +106,7 @@ jobs:
           set -euo pipefail
 
           for variant in standard devel distroless; do
-            echo "Building ${variant} for linux/${ARCH}"
+            echo "=== Building ${variant} (${ARCH}) ==="
 
             docker buildx build \
               --platform "linux/${ARCH}" \
@@ -133,14 +131,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GHCR
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" |
-            docker login ghcr.io \
-              --username "${{ github.actor }}" \
-              --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Publish multi-architecture tags
+      - name: Create GHCR multi-arch manifests
         env:
           VERSION: ${{ needs.check.outputs.version }}
           IS_NEW_ISO: ${{ needs.check.outputs.is_new_iso }}
@@ -148,8 +143,6 @@ jobs:
           set -euo pipefail
 
           for variant in standard devel distroless; do
-            echo "Publishing multi-architecture tag for ${variant}"
-
             docker buildx imagetools create \
               --tag "${IMAGE}:${variant}" \
               "${IMAGE}:${variant}-amd64" \
@@ -163,7 +156,6 @@ jobs:
             fi
           done
 
-          # Keep :latest and :vYYYY.MM.DD as aliases for Standard.
           docker buildx imagetools create \
             --tag "${IMAGE}:latest" \
             "${IMAGE}:standard-amd64" \
@@ -176,7 +168,7 @@ jobs:
               "${IMAGE}:standard-${VERSION}-arm64"
           fi
 
-      - name: Record built BlackArch version with a Git tag
+      - name: Tag the version in git
         if: needs.check.outputs.is_new_iso == 'true'
         env:
           VERSION: ${{ needs.check.outputs.version }}
@@ -184,15 +176,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          git init
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --force --tags origin
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
             echo "Tag ${VERSION} already exists."
           else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git tag -a "${VERSION}" -m "BlackArch ${RAW_VERSION}"
             git push origin "refs/tags/${VERSION}"
           fi
