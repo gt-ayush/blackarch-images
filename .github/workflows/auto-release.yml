@@ -1,4 +1,4 @@
-name: Auto-Sync BlackArch Release
+name: Auto-Sync BlackArch Images
 
 on:
   schedule:
@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
   packages: write
+
+concurrency:
+  group: blackarch-image-release
+  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/gt-ayush/blackarch
@@ -20,32 +24,47 @@ jobs:
       raw_version: ${{ steps.check.outputs.raw_version }}
       is_new_iso: ${{ steps.check.outputs.is_new_iso }}
       should_build: ${{ steps.check.outputs.should_build }}
+
     steps:
-      - name: Check BlackArch ISO version and schedule day
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check BlackArch ISO version and build schedule
         id: check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LATEST_ISO=$(curl -sLA "Mozilla/5.0" https://blackarch.org | grep -oE 'blackarch-linux-full-[0-9]{4}\.[0-9]{2}\.[0-9]{2}' | head -n 1 | grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}' || true)
+          set -euo pipefail
+
+          LATEST_ISO=$(
+            curl -fsSL -A "Mozilla/5.0" https://blackarch.org |
+              grep -oE 'blackarch-linux-full-[0-9]{4}\.[0-9]{2}\.[0-9]{2}' |
+              head -n 1 |
+              grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}' ||
+              true
+          )
 
           if [ -z "$LATEST_ISO" ]; then
-            LATEST_ISO=$(date -u +%Y.%m.%d)
+            echo "::error::Could not detect the latest BlackArch ISO version."
+            exit 1
           fi
 
           VERSION="v${LATEST_ISO}"
           DAY_OF_WEEK=$(date -u +%u)
 
-          echo "Detected version: ${VERSION}"
+          echo "Detected BlackArch version: ${VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "raw_version=${LATEST_ISO}" >> "$GITHUB_OUTPUT"
 
-          if gh release view "${VERSION}" >/dev/null 2>&1; then
+          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
             echo "is_new_iso=false" >> "$GITHUB_OUTPUT"
           else
             echo "is_new_iso=true" >> "$GITHUB_OUTPUT"
           fi
 
-          if ! gh release view "${VERSION}" >/dev/null 2>&1 || [ "$DAY_OF_WEEK" = "7" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] ||
+             [ "$DAY_OF_WEEK" = "7" ] ||
+             [ "$(git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; echo $?)" -ne 0 ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           else
             echo "should_build=false" >> "$GITHUB_OUTPUT"
@@ -54,6 +73,7 @@ jobs:
   build:
     needs: check
     if: needs.check.outputs.should_build == 'true'
+
     strategy:
       fail-fast: false
       matrix:
@@ -62,7 +82,9 @@ jobs:
             runner: ubuntu-24.04
           - arch: arm64
             runner: ubuntu-24.04-arm
+
     runs-on: ${{ matrix.runner }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -70,114 +92,107 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry (ghcr.io)
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Log in to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+            docker login ghcr.io \
+              --username "${{ github.actor }}" \
+              --password-stdin
 
       - name: Build and push ${{ matrix.arch }} images
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          IS_NEW_ISO: ${{ needs.check.outputs.is_new_iso }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          VERSION="${{ needs.check.outputs.version }}"
-          IS_NEW_ISO="${{ needs.check.outputs.is_new_iso }}"
-          ARCH="${{ matrix.arch }}"
-          mkdir -p release-assets
+          set -euo pipefail
 
           for variant in standard devel distroless; do
-            echo "=== Building ${variant} (${ARCH}) ==="
+            echo "Building ${variant} for linux/${ARCH}"
+
             docker buildx build \
               --platform "linux/${ARCH}" \
-              --no-cache \
-              --load \
-              -f "./${variant}/Containerfile" \
-              -t "${IMAGE}:${variant}-${ARCH}" \
+              --push \
+              --file "./${variant}/Containerfile" \
+              --tag "${IMAGE}:${variant}-${ARCH}" \
               "./${variant}"
 
-            docker push "${IMAGE}:${variant}-${ARCH}"
-
             if [ "$IS_NEW_ISO" = "true" ]; then
-              docker tag "${IMAGE}:${variant}-${ARCH}" "${IMAGE}:${variant}-${VERSION}-${ARCH}"
-              docker push "${IMAGE}:${variant}-${VERSION}-${ARCH}"
-              docker save "${IMAGE}:${variant}-${VERSION}-${ARCH}" | gzip > "release-assets/blackarch-${variant}-${VERSION}-${ARCH}.tar.gz"
+              docker buildx imagetools create \
+                --tag "${IMAGE}:${variant}-${VERSION}-${ARCH}" \
+                "${IMAGE}:${variant}-${ARCH}"
             fi
           done
-
-      - name: Upload offline release archives (${{ matrix.arch }})
-        if: needs.check.outputs.is_new_iso == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-assets-${{ matrix.arch }}
-          path: release-assets/*.tar.gz
 
   publish:
     needs: [check, build]
     if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-      packages: write
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry (ghcr.io)
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Create and push multi-arch manifests
+      - name: Log in to GitHub Container Registry
         run: |
-          VERSION="${{ needs.check.outputs.version }}"
-          IS_NEW_ISO="${{ needs.check.outputs.is_new_iso }}"
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+            docker login ghcr.io \
+              --username "${{ github.actor }}" \
+              --password-stdin
+
+      - name: Publish multi-architecture tags
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          IS_NEW_ISO: ${{ needs.check.outputs.is_new_iso }}
+        run: |
+          set -euo pipefail
 
           for variant in standard devel distroless; do
-            echo "=== Creating multi-arch manifest for ${variant} ==="
-            docker buildx imagetools create -t "${IMAGE}:${variant}" \
+            echo "Publishing multi-architecture tag for ${variant}"
+
+            docker buildx imagetools create \
+              --tag "${IMAGE}:${variant}" \
               "${IMAGE}:${variant}-amd64" \
               "${IMAGE}:${variant}-arm64"
 
             if [ "$IS_NEW_ISO" = "true" ]; then
-              docker buildx imagetools create -t "${IMAGE}:${variant}-${VERSION}" \
+              docker buildx imagetools create \
+                --tag "${IMAGE}:${variant}-${VERSION}" \
                 "${IMAGE}:${variant}-${VERSION}-amd64" \
                 "${IMAGE}:${variant}-${VERSION}-arm64"
             fi
           done
 
-          # Multi-arch :latest manifest
-          docker buildx imagetools create -t "${IMAGE}:latest" \
+          # Keep :latest and :vYYYY.MM.DD as aliases for Standard.
+          docker buildx imagetools create \
+            --tag "${IMAGE}:latest" \
             "${IMAGE}:standard-amd64" \
             "${IMAGE}:standard-arm64"
 
-          # Multi-arch :vYYYY.MM.DD manifest
           if [ "$IS_NEW_ISO" = "true" ]; then
-            docker buildx imagetools create -t "${IMAGE}:${VERSION}" \
+            docker buildx imagetools create \
+              --tag "${IMAGE}:${VERSION}" \
               "${IMAGE}:standard-${VERSION}-amd64" \
               "${IMAGE}:standard-${VERSION}-arm64"
           fi
 
-      - name: Download release archives
-        if: needs.check.outputs.is_new_iso == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          pattern: release-assets-*
-          merge-multiple: true
-          path: release-assets
-
-      - name: Commit version tag and publish GitHub Release
+      - name: Record built BlackArch version with a Git tag
         if: needs.check.outputs.is_new_iso == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+          RAW_VERSION: ${{ needs.check.outputs.raw_version }}
         run: |
-          VERSION="${{ needs.check.outputs.version }}"
-          RAW_VERSION="${{ needs.check.outputs.raw_version }}"
+          set -euo pipefail
 
-          git config user.name "gt-ayush"
-          git config user.email "gt-ayush@users.noreply.github.com"
+          git init
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
           git fetch --force --tags origin
 
           if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
-            echo "Tag ${VERSION} already exists; skipping commit and tag creation."
+            echo "Tag ${VERSION} already exists."
           else
-            git commit --allow-empty -m "release: sync BlackArch ${VERSION}"
-            git tag -a "${VERSION}" -m "BlackArch ${VERSION}"
-            git push origin main "refs/tags/${VERSION}"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "${VERSION}" -m "BlackArch ${RAW_VERSION}"
+            git push origin "refs/tags/${VERSION}"
           fi
-
-          gh release create "${VERSION}" release-assets/*.tar.gz \
-            --title "BlackArch ${VERSION}" \
-            --notes "Multi-arch (\`amd64\` / \`arm64\`) build synced with official BlackArch ISO **${RAW_VERSION}**. Pull via \`ghcr.io/gt-ayush/blackarch\` or download the offline \`.tar.gz\` archives below."

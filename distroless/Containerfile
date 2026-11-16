@@ -1,28 +1,10 @@
-# 1. amd64 base
-FROM docker.io/library/archlinux:latest AS base-amd64
+FROM --platform=$TARGETPLATFORM docker.io/library/archlinux:latest AS builder
 
-# 2. Download and extract Arch Linux ARM rootfs properly
-FROM docker.io/library/alpine:latest AS arm64-rootfs
-RUN apk add --no-cache curl tar gzip && \
-    mkdir -p /rootfs && \
-    curl -fSL http://archlinuxarm.org \
-      | tar -xz -C /rootfs --exclude='./dev/*' --exclude='./proc/*' --exclude='./sys/*'
-
-FROM scratch AS base-arm64
-COPY --from=arm64-rootfs /rootfs /
-RUN sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf && \
-    pacman-key --init && \
-    pacman-key --populate archlinuxarm && \
-    pacman -Syu --noconfirm curl
-
-# 3. Builder stage (automatically selects amd64 or arm64 via TARGETARCH)
-FROM base-${TARGETARCH} AS builder
-
-RUN curl -O https://blackarch.org && \
-    echo 'd338a4bb95d9e09f97508da68ac9e17d963b85f6  strap.sh' | sha1sum -c - && \
-    chmod +x strap.sh && \
-    ./strap.sh && \
-    rm -f strap.sh && \
+RUN curl -fsSL https://blackarch.org/strap.sh -o /tmp/strap.sh && \
+    echo 'd338a4bb95d9e09f97508da68ac9e17d963b85f6  /tmp/strap.sh' | sha1sum -c - && \
+    chmod +x /tmp/strap.sh && \
+    /tmp/strap.sh && \
+    rm -f /tmp/strap.sh && \
     if [ "$(uname -m)" = "x86_64" ]; then \
       sed -i '/^#\[multilib\]/,/^#Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' /etc/pacman.conf; \
     fi && \
@@ -32,11 +14,9 @@ RUN mkdir -p /rootfs/var/lib/pacman /rootfs/etc && \
     cp -r /etc/pacman* /rootfs/etc/ && \
     pacman -Sy --root /rootfs --noconfirm glibc openssl ca-certificates && \
     rm -rf /rootfs/var/cache/pacman/pkg/* \
-           /rootfs/var/lib/pacman \
-           /rootfs/etc/pacman* \
+           /rootfs/var/lib/pacman/sync/* \
            /rootfs/usr/share/man/* \
            /rootfs/usr/share/doc/*
 
-# 4. Final zero-shell scratch image
 FROM scratch
 COPY --from=builder /rootfs /
