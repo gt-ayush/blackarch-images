@@ -60,8 +60,7 @@ jobs:
               -t "${IMAGE}:${variant}-${ARCH}" \
               "./${variant}"
           done
-
-   publish:
+  publish:
     needs: build
     runs-on: ubuntu-24.04
 
