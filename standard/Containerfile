@@ -1,4 +1,4 @@
-FROM --platform=$TARGETPLATFORM docker.io/library/archlinux:latest
+FROM docker.io/library/archlinux:latest
 
 RUN curl -fsSL https://blackarch.org/strap.sh -o /tmp/strap.sh && \
     echo 'd338a4bb95d9e09f97508da68ac9e17d963b85f6  /tmp/strap.sh' | sha1sum -c - && \

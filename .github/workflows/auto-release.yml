@@ -1,4 +1,4 @@
-name: Auto-Sync BlackArch Images
+name: Auto-Sync BlackArch Release
 
 on:
   schedule:
@@ -8,10 +8,6 @@ on:
 permissions:
   contents: write
   packages: write
-
-concurrency:
-  group: blackarch-image-release
-  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/gt-ayush/blackarch
@@ -26,26 +22,26 @@ jobs:
       should_build: ${{ steps.check.outputs.should_build }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Detect BlackArch ISO version
+      - name: Detect BlackArch version
         id: check
+        shell: bash
         run: |
           set -euo pipefail
 
           LATEST_ISO=$(
-            curl -fsSL -A "Mozilla/5.0" https://blackarch.org |
-              grep -oE 'blackarch-linux-full-[0-9]{4}\.[0-9]{2}\.[0-9]{2}' |
-              head -n 1 |
-              grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}' ||
-              true
+            curl -fsSL -A "Mozilla/5.0" https://blackarch.org \
+              | grep -oE 'blackarch-linux-full-[0-9]{4}\.[0-9]{2}\.[0-9]{2}' \
+              | head -n 1 \
+              | grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}' || true
           )
 
           if [ -z "$LATEST_ISO" ]; then
-            echo "::error::Could not detect latest BlackArch ISO version"
+            echo "::error::Could not detect BlackArch ISO version"
             exit 1
           fi
 
@@ -83,7 +79,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v5
 
       - name: Set up QEMU
@@ -94,25 +90,23 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push multi-arch variant for ${{ matrix.arch }}
+      - name: Build and push image for ${{ matrix.arch }}
         env:
+          ARCH: ${{ matrix.arch }}
           VERSION: ${{ needs.check.outputs.version }}
           IS_NEW_ISO: ${{ needs.check.outputs.is_new_iso }}
-          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
 
           for variant in standard devel distroless; do
-            echo "=== Building ${variant} (${ARCH}) ==="
-
+            echo "== Building ${variant} for linux/${ARCH} =="
             docker buildx build \
               --platform "linux/${ARCH}" \
               --push \
-              --file "./${variant}/Containerfile" \
-              --tag "${IMAGE}:${variant}-${ARCH}" \
+              -f "./${variant}/Containerfile" \
+              -t "${IMAGE}:${variant}-${ARCH}" \
               "./${variant}"
 
             if [ "$IS_NEW_ISO" = "true" ]; then
@@ -132,10 +126,9 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Create GHCR multi-arch manifests
+      - name: Publish multi-arch tags
         env:
           VERSION: ${{ needs.check.outputs.version }}
           IS_NEW_ISO: ${{ needs.check.outputs.is_new_iso }}
@@ -168,7 +161,7 @@ jobs:
               "${IMAGE}:standard-${VERSION}-arm64"
           fi
 
-      - name: Tag the version in git
+      - name: Create git tag for new ISO
         if: needs.check.outputs.is_new_iso == 'true'
         env:
           VERSION: ${{ needs.check.outputs.version }}
