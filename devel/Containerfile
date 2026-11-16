@@ -1,10 +1,27 @@
-FROM docker.io/library/archlinux:base-devel
+# 1. amd64 base (exact same official image you already use)
+FROM docker.io/library/archlinux:base-devel AS base-amd64
+
+# 2. arm64 (aarch64) base from official Arch Linux ARM + base-devel
+FROM scratch AS base-arm64
+ADD http://archlinuxarm.org /
+RUN sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf && \
+    pacman-key --init && \
+    pacman-key --populate archlinuxarm && \
+    pacman -Syu --noconfirm base-devel curl
+
+# 3. Select architecture automatically via TARGETARCH (amd64 or arm64)
+FROM base-${TARGETARCH}
 
 RUN curl -O https://blackarch.org/strap.sh && \
     echo 'd338a4bb95d9e09f97508da68ac9e17d963b85f6  strap.sh' | sha1sum -c - && \
     chmod +x strap.sh && \
     ./strap.sh && \
+    rm -f strap.sh && \
+    if [ "$(uname -m)" = "x86_64" ]; then \
+      sed -i '/^#\[multilib\]/,/^#Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' /etc/pacman.conf; \
+    fi && \
     pacman -Syu --noconfirm && \
-    pacman -S --noconfirm curl gnupg git python python-pip
+    pacman -S --noconfirm curl gnupg git python python-pip && \
+    pacman -Scc --noconfirm
 
 CMD ["/bin/bash"]
