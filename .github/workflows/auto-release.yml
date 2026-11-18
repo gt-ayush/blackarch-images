@@ -33,10 +33,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up QEMU
-        if: matrix.arch == 'arm64'
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -51,7 +47,6 @@ jobs:
           set -euo pipefail
 
           for variant in standard devel distroless; do
-            echo "== Building ${variant} for linux/${ARCH} =="
             docker buildx build \
               --platform "linux/${ARCH}" \
               --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
@@ -60,12 +55,13 @@ jobs:
               -t "${IMAGE}:${variant}-${ARCH}" \
               "./${variant}"
           done
+
   publish:
     needs: build
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -92,7 +88,9 @@ jobs:
             "${IMAGE}:standard-amd64" \
             "${IMAGE}:standard-arm64"
 
-      - name: Create date tag
+      - name: Create date tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -102,9 +100,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "Tag ${TAG} already exists."
-          else
+          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
             git tag -a "${TAG}" -m "BlackArch image sync ${TAG}"
             git push origin "refs/tags/${TAG}"
+          fi
+
+          if ! gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release create "${TAG}" \
+              --title "BlackArch ${TAG}" \
+              --notes "Automated Arch Linux container images with the BlackArch repository. Available for linux/amd64 and linux/arm64.
+
+          - ghcr.io/gt-ayush/blackarch:latest
+          - ghcr.io/gt-ayush/blackarch:standard
+          - ghcr.io/gt-ayush/blackarch:devel
+          - ghcr.io/gt-ayush/blackarch:distroless"
           fi
