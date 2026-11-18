@@ -88,15 +88,16 @@ jobs:
             "${IMAGE}:standard-amd64" \
             "${IMAGE}:standard-arm64"
 
-      - name: Create date tag and GitHub Release
+      - name: Create date tag and GitHub Release with image archives
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
           TAG="v$(date -u +%Y.%m.%d)"
-          git fetch --force --tags origin
+          mkdir -p release-assets
 
+          git fetch --force --tags origin
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -105,13 +106,23 @@ jobs:
             git push origin "refs/tags/${TAG}"
           fi
 
-          if ! gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release create "${TAG}" \
-              --title "BlackArch ${TAG}" \
-              --notes "Automated Arch Linux container images with the BlackArch repository. Available for linux/amd64 and linux/arm64.
+          for arch in amd64 arm64; do
+            for variant in standard devel distroless; do
+              IMAGE_TAG="${IMAGE}:${variant}-${arch}"
+              ARCHIVE="release-assets/blackarch-${variant}-${arch}-${TAG}.tar.gz"
 
-          - ghcr.io/gt-ayush/blackarch:latest
-          - ghcr.io/gt-ayush/blackarch:standard
-          - ghcr.io/gt-ayush/blackarch:devel
-          - ghcr.io/gt-ayush/blackarch:distroless"
+              echo "Pulling ${IMAGE_TAG}"
+              docker pull --platform "linux/${arch}" "${IMAGE_TAG}"
+
+              echo "Saving ${IMAGE_TAG} to ${ARCHIVE}"
+              docker save "${IMAGE_TAG}" | gzip -1 > "${ARCHIVE}"
+            done
+          done
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" release-assets/*.tar.gz --clobber
+          else
+            gh release create "${TAG}" release-assets/*.tar.gz \
+              --title "BlackArch ${TAG}" \
+              --notes "Automated Arch Linux images configured with the BlackArch repository. Archives are provided for linux/amd64 and linux/arm64. GHCR images: ghcr.io/gt-ayush/blackarch"
           fi
