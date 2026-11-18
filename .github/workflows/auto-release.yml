@@ -64,6 +64,7 @@ jobs:
               --pull \
               --platform "linux/${ARCH}" \
               --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+              --build-arg "BUILDARCH=${ARCH}" \
               --provenance=true \
               --sbom=true \
               --push \
