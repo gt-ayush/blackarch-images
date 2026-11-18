@@ -137,18 +137,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          TAG="v$(date -u +%Y.%m.%d)"
-          mkdir -p release-assets
-
           git config user.name "gt-ayush"
           git config user.email "206460708+gt-ayush@users.noreply.github.com"
+
+          # Fetch tags first so the check below actually knows about remote tags
+          git fetch --force --tags origin
+
+          TAG="v$(date -u +%Y.%m.%d)"
+          mkdir -p release-assets
 
           if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
             echo "Release tag ${TAG} already exists; skipping date tag, archives, and release creation."
             exit 0
           fi
 
-          git fetch --force --tags origin
           git tag -a "${TAG}" -m "BlackArch image sync ${TAG}"
           git push origin "refs/tags/${TAG}"
 
