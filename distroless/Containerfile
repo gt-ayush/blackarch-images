@@ -23,7 +23,17 @@ RUN sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf && \
 
 RUN mkdir -p /rootfs/var/lib/pacman /rootfs/etc && \
     cp -r /etc/pacman* /rootfs/etc/ && \
-    pacman -Sy --root /rootfs --noconfirm glibc openssl ca-certificates && \
+    for attempt in 1 2 3; do \
+      if pacman --disable-download-timeout -Sy --root /rootfs --noconfirm glibc openssl ca-certificates; then \
+        break; \
+      fi; \
+      if [ "$attempt" -eq 3 ]; then \
+        echo "Pacman failed after 3 attempts" >&2; \
+        exit 1; \
+      fi; \
+      echo "Pacman sync attempt ${attempt} failed; retrying in 10 seconds..." >&2; \
+      sleep 10; \
+    done && \
     rm -rf /rootfs/var/cache/pacman/pkg/* \
            /rootfs/var/lib/pacman/sync/* \
            /rootfs/usr/share/man/* \
