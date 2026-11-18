@@ -2,18 +2,25 @@ name: Auto-Sync BlackArch Images
 
 on:
   schedule:
-    - cron: '0 2 * * *'
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: blackarch-release
+  cancel-in-progress: false
+
 permissions:
-  contents: write
-  packages: write
+  contents: read
+  packages: read
 
 env:
   IMAGE: ghcr.io/gt-ayush/blackarch
 
 jobs:
   build:
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -31,13 +38,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          install: true
 
       - name: Login to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build variant images
         env:
@@ -48,35 +61,65 @@ jobs:
 
           for variant in standard devel distroless; do
             docker buildx build \
+              --pull \
               --platform "linux/${ARCH}" \
               --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+              --provenance=true \
+              --sbom=true \
               --push \
+              --cache-from "type=gha,scope=${variant}-${ARCH}" \
+              --cache-to "type=gha,mode=max,scope=${variant}-${ARCH}" \
               -f "./${variant}/Containerfile" \
               -t "${IMAGE}:${variant}-${ARCH}" \
               "./${variant}"
           done
 
+      - name: Smoke test shell variants
+        if: matrix.arch == 'amd64'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          docker pull --platform "linux/${ARCH}" "${IMAGE}:standard-${ARCH}"
+          docker run --rm --platform "linux/${ARCH}" "${IMAGE}:standard-${ARCH}" \
+            /bin/bash -lc 'test -x /bin/bash && pacman --version'
+          docker pull --platform "linux/${ARCH}" "${IMAGE}:devel-${ARCH}"
+          docker run --rm --platform "linux/${ARCH}" "${IMAGE}:devel-${ARCH}" \
+            /bin/bash -lc 'test -x /bin/bash && test -d /usr/bin'
+
   publish:
     needs: build
+    permissions:
+      contents: write
+      packages: write
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          install: true
 
       - name: Login to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish multi-arch tags
         run: |
           set -euo pipefail
 
           for variant in standard devel distroless; do
+            docker buildx imagetools inspect "${IMAGE}:${variant}-amd64"
+            docker buildx imagetools inspect "${IMAGE}:${variant}-arm64"
+
             docker buildx imagetools create \
               --tag "${IMAGE}:${variant}" \
               "${IMAGE}:${variant}-amd64" \
@@ -97,14 +140,17 @@ jobs:
           TAG="v$(date -u +%Y.%m.%d)"
           mkdir -p release-assets
 
-          git fetch --force --tags origin
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            git tag -a "${TAG}" -m "BlackArch image sync ${TAG}"
-            git push origin "refs/tags/${TAG}"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Release tag ${TAG} already exists; skipping date tag, archives, and release creation."
+            exit 0
           fi
+
+          git fetch --force --tags origin
+          git tag -a "${TAG}" -m "BlackArch image sync ${TAG}"
+          git push origin "refs/tags/${TAG}"
 
           for arch in amd64 arm64; do
             for variant in standard devel distroless; do
@@ -119,10 +165,11 @@ jobs:
             done
           done
 
-          if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" release-assets/*.tar.gz --clobber
-          else
-            gh release create "${TAG}" release-assets/*.tar.gz \
-              --title "BlackArch ${TAG}" \
-              --notes "Automated Arch Linux images configured with the BlackArch repository. Archives are provided for linux/amd64 and linux/arm64. GHCR images: ghcr.io/gt-ayush/blackarch"
-          fi
+          gh release create "${TAG}" release-assets/*.tar.gz \
+            --title "BlackArch ${TAG}" \
+            --notes "Automated BlackArch container image sync.
+
+Source commit: ${GITHUB_SHA}
+Published images: ghcr.io/gt-ayush/blackarch
+Architectures: linux/amd64, linux/arm64
+Variants: standard, devel, distroless"
