@@ -165,10 +165,9 @@ jobs:
             done
           done
 
-          gh release create "${TAG}" release-assets/*.tar.gz \
+           gh release create "${TAG}" release-assets/*.tar.gz \
             --title "BlackArch ${TAG}" \
-            --notes "Automated BlackArch container image sync.
-
+            --notes "$(printf 'Automated BlackArch container image sync.\n\nSource commit: %s\nPublished images: ghcr.io/gt-ayush/blackarch\nArchitectures: linux/amd64, linux/arm64\nVariants: standard, devel, distroless' "${GITHUB_SHA}")"
 Source commit: ${GITHUB_SHA}
 Published images: ghcr.io/gt-ayush/blackarch
 Architectures: linux/amd64, linux/arm64
