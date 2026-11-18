@@ -140,8 +140,8 @@ jobs:
           TAG="v$(date -u +%Y.%m.%d)"
           mkdir -p release-assets
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "gt-ayush"
+          git config user.email "206460708+gt-ayush@users.noreply.github.com"
 
           if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
             echo "Release tag ${TAG} already exists; skipping date tag, archives, and release creation."
